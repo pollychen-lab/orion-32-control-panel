@@ -496,6 +496,8 @@ impl ControlPanelRouting {
     }
 
     fn draw_sources(&mut self, ui: &mut egui::Ui, orion_state: &OrionState) {
+        let label_edit_cell_before_draw = self.label_edit_cell;
+
         for row in 0..orion_state.source_counts.len() as u8 {
             for column in 0..orion_state.source_counts[row as usize] as u8 {
                 if Some([column, row]) != self.label_edit_cell {
@@ -504,7 +506,12 @@ impl ControlPanelRouting {
             }
         }
 
-        if let Some([column, row]) = self.label_edit_cell {
+        // A double-click can set label_edit_cell inside draw_source, which already
+        // drew this TextEdit once. Defer the shifted edit widget until next frame
+        // so the same click doesn't overwrite the select-all cursor range.
+        if self.label_edit_cell == label_edit_cell_before_draw
+            && let Some([column, row]) = self.label_edit_cell
+        {
             self.draw_source_editing(ui, column, row, orion_state);
         }
     }
@@ -1051,5 +1058,88 @@ impl ControlPanelRouting {
     fn clear_undo(&mut self) {
         self.undo_buffer = Vec::new();
         self.undo_cursor = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn double_clicking_route_label_selects_the_entire_label() {
+        let ctx = egui::Context::default();
+        let orion_paths = Arc::new(Mutex::new(OrionPaths::new()));
+        let orion_persistence =
+            Arc::new(Mutex::new(OrionPersistence::new(Arc::clone(&orion_paths))));
+        let orion_states = Arc::new(Mutex::new(OrionStates::default()));
+        let (hid_write_tx, _) = mpsc::channel();
+        let orion_hid = Arc::new(Mutex::new(OrionHid::new(
+            hid_write_tx,
+            Arc::clone(&orion_states),
+            Arc::clone(&orion_persistence),
+        )));
+        let text_editor = Arc::new(Mutex::new(TextEditor::new()));
+        let mut routing = ControlPanelRouting::new(
+            orion_states,
+            orion_hid,
+            orion_paths,
+            orion_persistence,
+            text_editor,
+        );
+        let mut orion_state = OrionState::default();
+        orion_state.source_counts[0] = 1;
+        Arc::make_mut(&mut orion_state.labels)[0][0] = "A B".to_owned();
+
+        let area_id = egui::Id::new("route_test");
+        let route_id = egui::Id::new(("route", 0_u8, 0_u8));
+        let click_pos = egui::pos2(132.0, 289.0);
+        let mut edit_id = None;
+        let mut run_frame = |time, events| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 700.0),
+                )),
+                time: Some(time),
+                events,
+                ..Default::default()
+            };
+
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::Area::new(area_id)
+                    .fixed_pos(egui::Pos2::ZERO)
+                    .show(ui.ctx(), |ui| {
+                        edit_id = Some(ui.id().with(route_id));
+                        routing.draw_sources(ui, &orion_state);
+                    });
+            });
+            output.textures_delta.clear();
+        };
+
+        let pointer_event = |pressed| egui::Event::PointerButton {
+            pos: click_pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+
+        run_frame(
+            0.01,
+            vec![egui::Event::PointerMoved(click_pos), pointer_event(true)],
+        );
+        run_frame(0.02, vec![pointer_event(false)]);
+        run_frame(0.10, vec![pointer_event(true)]);
+        run_frame(0.11, vec![pointer_event(false)]);
+        run_frame(0.12, vec![]);
+
+        assert_eq!(routing.label_edit_cell, Some([0, 0]));
+        let state = egui::widgets::text_edit::TextEditState::load(&ctx, edit_id.unwrap())
+            .expect("route label should enter edit mode");
+        let range = state
+            .cursor
+            .char_range()
+            .expect("route label should have a selection");
+        let [start, end] = range.sorted_cursors();
+        assert_eq!((start.index.0, end.index.0), (0, 3));
     }
 }
