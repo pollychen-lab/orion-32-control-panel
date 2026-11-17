@@ -48,7 +48,7 @@ impl TextEditor {
 
         let edit_string = self.edit_string.get_or_insert_with(|| text.to_owned());
 
-        let response = ui.put(
+        ui.put(
             rect,
             egui::TextEdit::singleline(edit_string)
                 .id(id)
@@ -69,7 +69,7 @@ impl TextEditor {
             ui.memory_mut(|mem| mem.request_focus(id));
         }
 
-        if self.select_all_on_focus && response.has_focus() {
+        if self.select_all_on_focus && ui.memory(|mem| mem.has_focus(id)) {
             let mut state =
                 egui::widgets::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
 
